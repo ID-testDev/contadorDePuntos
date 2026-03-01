@@ -579,18 +579,10 @@ def render_style2(
     return "\n".join(lines).strip() + "\n"
 
 # -------------------- Streamlit UI --------------------
-st.set_page_config(page_title="Contador HP (Formato 1 + 2)", layout="centered")
-st.title("🧮 Contador de puntos — Hogwarts (Formato 1 + Formato 2)")
+st.set_page_config(page_title="Contador ID", layout="centered")
+st.title("🧮 Contador de puntos — ID")
 
-default_text = """Trivia 20h00 02/28
-💚🐸 Panda - Pando
-💛🐸 Edy - Elsapito
-💙🐸 Canela - Majo
-
-1. 💚💙💙💛💙💛💙💛💚💛❤️💙💙💚💙💙💚💛💙💛
-2. 💚💚💙💙💛💙💙💛💛❤️💛💙💛💙💚💙💙💚💙💛💛💙💙💙
-3. 💚💙💛💙💙❤️💙💚💙💙💛💛💙💙💚💙💛💛💙💛💛💛💚💙💙
-4. 💛🦉Serelith - Juli💚💙💚💙❤️💙💛💙💛💛💚💙💛💙💙💙💙💚💛💚💙💙💛💛💙💙💚💚❤️
+default_text = """Pega aquí tu dinámica
 """
 
 text = st.text_area("Pega aquí el texto de la dinámica", value=default_text, height=320)
