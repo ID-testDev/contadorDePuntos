@@ -25,6 +25,8 @@ OUTPUT_STYLES = {
     "Output C — Casas en bloques (WhatsApp markdown)": "style3",
 }
 
+DASH_REGEX = r"[-‐‑‒–—−]"
+
 
 HOUSE_BADGES = {
     "💛": ("🦡", "HUFFLEPUFF"),
@@ -60,8 +62,16 @@ def normalize_wa(s: str) -> str:
     if s is None:
         return ""
     s = s.translate(_INVISIBLES_MAP)
-    # normalize common dash variants to ASCII hyphen
-    s = s.replace("–", "-").replace("—", "-")
+    # Normalize many dash-like characters to ASCII hyphen '-'
+    # Includes: hyphen, non-breaking hyphen, figure dash, en dash, em dash, minus sign
+    s = s.translate(str.maketrans({
+        "‐": "-",  # U+2010 hyphen
+        "‑": "-",  # U+2011 non-breaking hyphen
+        "‒": "-",  # U+2012 figure dash
+        "–": "-",  # U+2013 en dash
+        "—": "-",  # U+2014 em dash
+        "−": "-",  # U+2212 minus sign
+    }))
     return s
 
 def strip_ws(s: str) -> str:
@@ -867,7 +877,43 @@ def render_style3(totals: Dict[str, int]) -> str:
 st.set_page_config(page_title="Contador Puntos ID", layout="centered")
 st.title("🧮 Contador de puntos — Imperius Draconis")
 
-default_text = """💛🐸 Dueño - Sapo
+st.markdown(
+    """
+### Instrucciones rápidas
+
+**Casas**
+- ❤️ Gryffindor, 💚 Slytherin, 💙 Ravenclaw, 💛 Hufflepuff
+
+**Formato 1**
+- `N.`
+- 1ª línea = **Top** (1000/900/800/700; si falta 4º se pierde ese puntaje)
+- Luego 0–4 líneas de respuestas extra (20 c/u)
+- Ausentes en top: `//` o `❌` ⇒ **350** (y si están ausentes, no deberían tener respuestas extra)
+
+**Formato 2**
+- (Opcional) título `Trivia ...`
+- (Opcional) sapos: `Casa🐸 Dueño - Sapo`
+- Cada ronda en **una sola línea** `N. ...`
+- Top = **primeras 4 casas únicas**; repeticiones cuentan como respuestas (20 c/u)
+- Lechuzas: `Casa🦉 Dueño - Lechuza` (hasta 3 por ronda; se registran las primeras 2)
+
+**Formato 3**
+- (Opcional) sapos: `Casa🐸 Dueño - Sapo`
+- Cada ronda son **2 líneas**:
+  - `N- TOP`
+  - `RESPUESTAS...` (20 c/u)
+
+**Ronda anulada (cualquier formato)**
+- `N. ❌`, `N. //`, `N- ❌` o `N- //` ⇒ **0 puntos para todas** y el sapo **no cuenta**.
+
+**Multiplicadores**
+- Puedes escribir `doble/dobles`, `triple/triples`, `x2`, `x3` (en cualquier parte).
+- Se detecta y se **prellena**, pero **la UI manda**.
+"""
+)
+
+default_text = """Nombre de la dinámica
+💚🐸 Panda - Pando
 """
 
 text = st.text_area("Pega aquí el texto de la dinámica", value=default_text, height=320)
