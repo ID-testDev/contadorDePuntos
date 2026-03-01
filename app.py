@@ -22,7 +22,20 @@ TOAD = "🐸"
 OUTPUT_STYLES = {
     "Output A — Estilo Formato 1 (decorado)": "style1",
     "Output B — Estilo Formato 2 (medallas + mascotas + rondas)": "style2",
+    "Output C — Casas en bloques (WhatsApp markdown)": "style3",
 }
+
+
+HOUSE_BADGES = {
+    "💛": ("🦡", "HUFFLEPUFF"),
+    "💙": ("🦅", "RAVENCLAW"),
+    "💚": ("🐍", "SLYTHERIN"),
+    "❤️": ("🦁", "GRYFFINDOR"),
+}
+
+def fmt_commas(n: int) -> str:
+    return f"{n:,}"
+
 
 # -------------------- WhatsApp-safe normalization (future-proof) --------------------
 # We deliberately do NOT remove ZWJ (\u200D) nor VS16 (\uFE0F) to avoid breaking compound emojis.
@@ -99,6 +112,27 @@ def count_team_emojis(s: str) -> Dict[str, int]:
         counts[t] += 1
     return counts
 
+def detect_multiplier_in_text(s: str) -> Tuple[int, List[str]]:
+    """Detect x2/x3 markers in free text. Returns (multiplier, alerts). Case-insensitive.
+    Supported: 'doble', 'dobles', 'x2', 'x 2' => 2; 'triple', 'triples', 'x3', 'x 3' => 3.
+    If both appear, uses the max and emits an alert.
+    """
+    alerts: List[str] = []
+    s_norm = normalize_wa(s or "")
+    s_low = s_norm.lower()
+
+    has2 = bool(re.search(r"\b(doble|dobles)\b", s_low)) or bool(re.search(r"\bx\s*2\b", s_low))
+    has3 = bool(re.search(r"\b(triple|triples)\b", s_low)) or bool(re.search(r"\bx\s*3\b", s_low))
+
+    if has2 and has3:
+        alerts.append("Alerta: se detectaron marcadores de multiplicador x2 y x3 en la misma ronda; se tomará x3 por default.")
+        return 3, alerts
+    if has3:
+        return 3, alerts
+    if has2:
+        return 2, alerts
+    return 1, alerts
+
 # -------------------- Formatting --------------------
 def fmt_thousands_dot(n: int) -> str:
     return f"{n:,}".replace(",", ".")
@@ -119,11 +153,53 @@ def medal_lines_sorted(totals: Dict[str, int]) -> List[Tuple[str, str, int]]:
     return out
 
 # -------------------- Input format detection --------------------
+
 def detect_input_format(text: str) -> str:
+    """Autodetect among format1, format2, format3."""
     text = normalize_wa(text)
     lines = [ln.rstrip("\n") for ln in text.splitlines() if ln.strip()]
     if not lines:
         return "format1"
+
+    has_trivia_title = bool(re.match(r"^\s*Trivia\b", lines[0], flags=re.IGNORECASE))
+
+    def line_starts_with_team(line: str) -> bool:
+        s = normalize_wa(line).lstrip()
+        return first_team_in_line(s[:8]) is not None
+
+    has_toad_lines = any(line_starts_with_team(ln) and TOAD in normalize_wa(ln) for ln in lines[:20])
+
+    # --- Format 3 signal: many headers like "1- ..."
+    dash_headers = [i for i, ln in enumerate(lines) if re.match(r"^\s*\d+\s*-\s*", ln)]
+    if dash_headers:
+        # Heuristic: if at least one dash header is followed by a non-empty line with team emojis, treat as format3
+        good = 0
+        for idx in dash_headers[:10]:
+            ln = lines[idx]
+            rest = re.sub(r"^\s*\d+\s*-\s*", "", ln).strip()
+            if first_team_in_line(rest) is not None or strip_ws(rest) in {"//", "❌"}:
+                good += 1
+                continue
+            # If no top on same line, check next non-empty line
+            j = idx + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines) and (first_team_in_line(lines[j]) is not None or strip_ws(lines[j]) in {"//", "❌"}):
+                good += 1
+        if good >= 1:
+            return "format3"
+
+    # --- Format 2 signals
+    round_lines = [ln for ln in lines if re.match(r"^\s*\d+\.\s*", ln)]
+    looks_like_single_line_rounds = False
+    if round_lines:
+        long_rounds = sum(1 for ln in round_lines if len(only_team_emojis(ln)) >= 10)
+        looks_like_single_line_rounds = long_rounds >= max(1, len(round_lines) // 2)
+
+    if has_trivia_title or has_toad_lines or looks_like_single_line_rounds:
+        return "format2"
+
+    return "format1"
 
     has_trivia_title = bool(re.match(r"^\s*Trivia\b", lines[0], flags=re.IGNORECASE))
 
@@ -165,6 +241,7 @@ class RoundParsed:
     answer_lines: List[str]     # format1: lines after top
     is_annulled: bool = False
     detected_format: str = "format1"
+    detected_multiplier: int = 1  # 1=normal, 2=doble/x2, 3=triple/x3 (prefill; UI can override)
     owls_in_line: List[OwlMeta] = field(default_factory=list)
 
 @dataclass
@@ -378,6 +455,106 @@ def parse_format2(text: str) -> ParsedGame:
         alerts=alerts,
     )
 
+
+def parse_format3(text: str) -> ParsedGame:
+    """Format 3:
+    - Optional toad lines at start: <TEAM><🐸> Dueño - Sapo
+    - Each round uses TWO lines:
+        N- <TOP>          (or N- ❌ / N- // for annulled)
+        <ANSWERS>         (all extra responses; may include 'doble/dobles/triple/triples/x2/x3')
+    """
+    text = normalize_wa(text)
+    raw_lines = [ln.rstrip("\n") for ln in text.splitlines()]
+    nonempty = [ln for ln in raw_lines if ln.strip()]
+
+    # No explicit title in format3; keep blank
+    title = ""
+
+    header_re = re.compile(r"^\s*(\d+)\s*-\s*(.*)\s*$")
+
+    before_rounds: List[str] = []
+    round_blocks: List[Tuple[int, str, Optional[str]]] = []  # (num, top_part, answers_line)
+    i = 0
+    in_rounds = False
+
+    while i < len(nonempty):
+        ln = normalize_wa(nonempty[i])
+        m = header_re.match(ln)
+        if not m and not in_rounds:
+            before_rounds.append(ln)
+            i += 1
+            continue
+        if m:
+            in_rounds = True
+            rnum = int(m.group(1))
+            rest = normalize_wa(m.group(2)).strip()
+
+            # Determine top line (can be on same line or next line)
+            top_line = rest
+            # Annulled if rest is ❌ or //
+            if strip_ws(top_line) in {"//", "❌"}:
+                round_blocks.append((rnum, top_line, None))
+                i += 1
+                continue
+
+            if first_team_in_line(top_line) is None and strip_ws(top_line) not in {"//", "❌"}:
+                # take next line as top if current has no top
+                j = i + 1
+                if j < len(nonempty):
+                    top_line = normalize_wa(nonempty[j]).strip()
+                    i = j  # advance
+                else:
+                    top_line = ""
+            # answers line is next non-empty after top
+            j = i + 1
+            answers_line = None
+            if j < len(nonempty):
+                # if next is another header, answers missing
+                if not header_re.match(nonempty[j]):
+                    answers_line = normalize_wa(nonempty[j]).strip()
+            round_blocks.append((rnum, top_line, answers_line))
+            # advance: if we consumed answers_line, skip it
+            if answers_line is not None:
+                i = j + 1
+            else:
+                i += 1
+            continue
+        # If we're in_rounds but line doesn't match header, skip
+        i += 1
+
+    toads_prefill = parse_toad_lines_format2(before_rounds)
+
+    rounds: List[RoundParsed] = []
+    alerts: List[str] = []
+
+    for (rnum, top_line, answers_line) in round_blocks:
+        is_annulled = strip_ws(top_line) in {"//", "❌"}
+        rp = RoundParsed(
+            num=rnum,
+            raw_line="",  # unused for format3
+            top_line=top_line,
+            answer_lines=[answers_line] if (answers_line is not None and answers_line.strip()) else [],
+            is_annulled=is_annulled,
+            detected_format="format3",
+        )
+        if not is_annulled:
+            # detect multiplier in answers line
+            mul, a2 = detect_multiplier_in_text(answers_line or "")
+            rp.detected_multiplier = mul
+            # Attach round context to alerts
+            for a in a2:
+                alerts.append(f"Alerta (ronda {rnum}): {a}")
+        rounds.append(rp)
+
+    return ParsedGame(
+        input_format="format3",
+        title_line=title,
+        rounds=sorted(rounds, key=lambda x: x.num),
+        toads_prefill=toads_prefill,
+        owls_prefill_by_team={},  # lechuzas aún no definidas para formato3
+        alerts=alerts,
+    )
+
 def parse_format1(text: str) -> ParsedGame:
     rounds, alerts = parse_round_blocks_format1(text)
     return ParsedGame(input_format="format1", title_line="", rounds=sorted(rounds, key=lambda x: x.num), alerts=alerts)
@@ -468,6 +645,71 @@ def score_round_format2(r: RoundParsed, multiplier: int, toad_bonus: Dict[str, b
         r.is_annulled = True
     if r.is_annulled:
         return pts, alerts, answers_count
+
+def score_round_format3(
+    r: RoundParsed,
+    multiplier: int,
+    toad_bonus: Dict[str, bool],
+) -> Tuple[Dict[str, int], List[str], Dict[str, int]]:
+    """Format 3 scoring: top_line gives ordered top, answer_lines[0] is all extra answers."""
+    alerts: List[str] = []
+    pts = {e: 0 for e in TEAMS}
+    answers_count = {e: 0 for e in TEAMS}
+
+    top_raw = strip_ws(r.top_line)
+    if top_raw in {"//", "❌"}:
+        r.is_annulled = True
+    if r.is_annulled:
+        return pts, alerts, answers_count
+
+    # Top: first unique teams in order found in top_line.
+    present: List[str] = []
+    seen: List[str] = []
+    for emo in iter_team_emojis(r.top_line):
+        if emo in seen:
+            alerts.append(f"Alerta: en la ronda {r.num} el top repite {emo}. Se tomó solo la primera aparición para el top.")
+            continue
+        seen.append(emo)
+        present.append(emo)
+
+    # Assign points (no compaction; unused discarded)
+    for i, emo in enumerate(present):
+        if i < len(TOP_POINTS):
+            pts[emo] += TOP_POINTS[i] * multiplier
+
+    # Teams missing in top => absent 350 (and alert)
+    absent: List[str] = []
+    for emo in TEAMS:
+        if emo not in seen:
+            absent.append(emo)
+            pts[emo] += ABSENT_TOP_POINTS * multiplier
+            alerts.append(
+                f"Alerta: en la ronda {r.num} la casa {emo} no aparece en el top. Se asumió ausente y se asignaron {ABSENT_TOP_POINTS} puntos."
+            )
+
+    # Answers line(s): each team emoji is +20
+    for ln in r.answer_lines:
+        counts = count_team_emojis(ln)
+        for emo, c in counts.items():
+            if c > 0:
+                answers_count[emo] += c
+                pts[emo] += (c * ANSWER_POINTS) * multiplier
+
+    # Absent team having answers -> alert
+    for emo in absent:
+        if answers_count[emo] > 0:
+            alerts.append(
+                f"Alerta: en la ronda {r.num}, la casa {emo} tiene {answers_count[emo]} respuestas "
+                f"pero no aparece dentro del top (está marcada como ausente)."
+            )
+
+    # Toad bonus (only if not annulled)
+    for emo, has in toad_bonus.items():
+        if has:
+            answers_count[emo] += 1
+            pts[emo] += ANSWER_POINTS * multiplier
+
+    return pts, alerts, answers_count
 
     seen_top: List[str] = []
     for team in iter_team_emojis(r.raw_line):
@@ -586,9 +828,29 @@ def render_style2(
 
     return "\n".join(lines).strip() + "\n"
 
+def render_style3(totals: Dict[str, int]) -> str:
+    """WhatsApp-friendly blocks, ordered by points desc.
+    Example:
+    _💛🦡HUFFLEPUFF🦡💛_
+    > 13,120 Puntos.
+    """
+    items = [(e, totals[e]) for e in TEAMS]
+    items.sort(key=lambda x: (-x[1], x[0]))
+
+    blocks: List[str] = []
+    for team_emo, pts in items:
+        mascot, name = HOUSE_BADGES.get(team_emo, ("", TEAMS[team_emo].upper()))
+        # WhatsApp markdown: underscores for italic, blockquote for points
+        blocks.append(f"_{team_emo}{mascot}{name}{mascot}{team_emo}_")
+        blocks.append(f"> {fmt_commas(pts)} Puntos.")
+        blocks.append("")  # blank line between blocks
+
+    return "\n".join(blocks).rstrip() + "\n"
+
+
 # -------------------- Streamlit UI --------------------
-st.set_page_config(page_title="Contador ID", layout="centered")
-st.title("🧮 Contador de puntos — Imperius Draconis")
+st.set_page_config(page_title="Contador Puntos ID", layout="centered")
+st.title("🧮 Contador de puntos — ID")
 
 default_text = """
 """
@@ -626,7 +888,7 @@ if parsed:
             mult_label = st.selectbox(
                 f"Ronda {r.num} — Valor",
                 options=["Normal (x1)", "Doble (x2)", "Triple (x3)"],
-                index=0,
+                index=({0:0,1:0,2:1,3:2}.get(getattr(r, "detected_multiplier", 1), 0)),
                 key=f"mult_{r.num}",
             )
             mult = 1 if "x1" in mult_label else (2 if "x2" in mult_label else 3)
@@ -713,8 +975,10 @@ if parsed:
 
             if parsed.input_format == "format1":
                 pts, a, _ = score_round_format1(r, mult, bonus)
-            else:
+            elif parsed.input_format == "format2":
                 pts, a, _ = score_round_format2(r, mult, bonus)
+            else:
+                pts, a, _ = score_round_format3(r, mult, bonus)
 
             for emo in TEAMS:
                 totals[emo] += pts[emo]
@@ -729,7 +993,7 @@ if parsed:
         style_key = OUTPUT_STYLES[output_choice]
         if style_key == "style1":
             out = render_style1(parsed.title_line, totals)
-        else:
+        elif style_key == "style2":
             out = render_style2(
                 title_line=parsed.title_line,
                 totals=totals,
@@ -737,6 +1001,8 @@ if parsed:
                 owls_cfg=owls_cfg,
                 rounds=rounds,
             )
+        else:
+            out = render_style3(totals)
 
         st.divider()
         st.subheader("✅ Resultado (con botón de copiar)")
