@@ -914,5 +914,5 @@ if parsed:
             out = render_style3(totals)
 
         st.divider()
-        st.subheader("✅ Resultado (con botón copiar)")
+        st.subheader("✅ Resultado")
         st.code(out, language=None)
