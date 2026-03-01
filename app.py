@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 
 # -------------------- Constants --------------------
+# Canonical team symbols (what we display and store)
 TEAMS = {
     "❤️": "Gryffindor",
     "💚": "Slytherin",
@@ -24,9 +25,7 @@ OUTPUT_STYLES = {
 }
 
 # -------------------- WhatsApp-safe normalization (future-proof) --------------------
-# We DO NOT remove:
-# - ZWJ (\u200D) to avoid breaking compound emojis (👨‍👩‍👧‍👦, 🧑‍💻, etc.)
-# - Variation Selector-16 (\uFE0F) to avoid altering emoji presentation
+# We deliberately do NOT remove ZWJ (\u200D) nor VS16 (\uFE0F) to avoid breaking compound emojis.
 _INVISIBLES_MAP = dict.fromkeys(
     map(
         ord,
@@ -44,52 +43,63 @@ _INVISIBLES_MAP = dict.fromkeys(
 )
 
 def normalize_wa(s: str) -> str:
-    """Normalize WhatsApp text: remove common invisibles, normalize dash variants."""
+    """Normalize WhatsApp text: remove common invisible chars and normalize dash variants."""
     if s is None:
         return ""
     s = s.translate(_INVISIBLES_MAP)
-    # normalize common dash variants to ASCII hyphen (helps parsing owner - name)
+    # normalize common dash variants to ASCII hyphen
     s = s.replace("–", "-").replace("—", "-")
     return s
 
 def strip_ws(s: str) -> str:
-    """Remove all whitespace after WhatsApp normalization."""
+    """Remove all whitespace AFTER WhatsApp normalization."""
     s = normalize_wa(s)
     return re.sub(r"\s+", "", s).strip()
 
-# -------------------- Team emoji canonicalization --------------------
-# WhatsApp sometimes sends the red heart without VS16: "❤" instead of "❤️".
-# We support both, canonicalizing to "❤️" everywhere internally.
-TEAM_ALIASES = {
-    "❤": "❤️",   # U+2764 text heart
-    "❤️": "❤️",
-    "💚": "💚",
-    "💙": "💙",
-    "💛": "💛",
-}
+# -------------------- Team tokenization (handles ❤ vs ❤️ safely) --------------------
+HEART_CHAR = "❤"          # U+2764
+VS16 = "\ufe0f"           # Variation Selector-16
+HEART_TEAM = "❤️"         # canonical display for Gryffindor
 
-def canon_team_emoji(ch: str) -> Optional[str]:
-    return TEAM_ALIASES.get(ch)
-
-# -------------------- Helpers --------------------
-def only_team_emojis(s: str) -> List[str]:
+def iter_team_emojis(s: str):
+    """
+    Yield canonical team emojis found in s.
+    Handles the common WhatsApp case where Gryffindor appears as ❤ (no VS16)
+    or as ❤️ (❤ + VS16). We keep VS16 in general, but tokenize hearts safely.
+    """
     s = normalize_wa(s)
-    out: List[str] = []
-    for ch in s:
-        c = canon_team_emoji(ch)
-        if c:
-            out.append(c)
-    return out
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch == HEART_CHAR:
+            # consume optional VS16
+            if i + 1 < len(s) and s[i + 1] == VS16:
+                i += 2
+            else:
+                i += 1
+            yield HEART_TEAM
+            continue
+        if ch in TEAMS and ch != HEART_TEAM:
+            i += 1
+            yield ch
+            continue
+        i += 1
+
+def first_team_in_line(line: str) -> Optional[str]:
+    for t in iter_team_emojis(line):
+        return t
+    return None
+
+def only_team_emojis(s: str) -> List[str]:
+    return list(iter_team_emojis(s))
 
 def count_team_emojis(s: str) -> Dict[str, int]:
-    s = normalize_wa(s)
-    counts = {e: 0 for e in TEAMS}  # canonical keys only
-    for ch in s:
-        c = canon_team_emoji(ch)
-        if c:
-            counts[c] += 1
+    counts = {e: 0 for e in TEAMS}
+    for t in iter_team_emojis(s):
+        counts[t] += 1
     return counts
 
+# -------------------- Formatting --------------------
 def fmt_thousands_dot(n: int) -> str:
     return f"{n:,}".replace(",", ".")
 
@@ -103,20 +113,25 @@ def medal_lines_sorted(totals: Dict[str, int]) -> List[Tuple[str, str, int]]:
     items = [(e, totals[e]) for e in TEAMS]
     items.sort(key=lambda x: (-x[1], x[0]))
     medals = ["🥇", "🥈", "🥉", "🏅"]
-    return [(medals[i] if i < 4 else "🏅", emo, pts) for i, (emo, pts) in enumerate(items)]
+    out: List[Tuple[str, str, int]] = []
+    for i, (emoji, pts) in enumerate(items):
+        out.append((medals[i] if i < 4 else "🏅", emoji, pts))
+    return out
 
+# -------------------- Input format detection --------------------
 def detect_input_format(text: str) -> str:
     text = normalize_wa(text)
     lines = [ln.rstrip("\n") for ln in text.splitlines() if ln.strip()]
     if not lines:
         return "format1"
 
+    has_trivia_title = bool(re.match(r"^\s*Trivia\b", lines[0], flags=re.IGNORECASE))
+
     def line_starts_with_team(line: str) -> bool:
         s = normalize_wa(line).lstrip()
-        return bool(s) and (canon_team_emoji(s[0]) is not None)
+        return first_team_in_line(s[:6]) is not None
 
-    has_toad_lines = any(line_starts_with_team(ln) and TOAD in ln for ln in lines[:12])
-    has_trivia_title = bool(re.match(r"^\s*Trivia\b", lines[0], flags=re.IGNORECASE))
+    has_toad_lines = any(line_starts_with_team(ln) and TOAD in normalize_wa(ln) for ln in lines[:15])
 
     round_lines = [ln for ln in lines if re.match(r"^\s*\d+\.\s*", ln)]
     looks_like_single_line_rounds = False
@@ -145,9 +160,9 @@ class ToadMeta:
 @dataclass
 class RoundParsed:
     num: int
-    raw_line: str               # for format2 (text after "N.")
-    top_line: str               # for format1 (line 1 after "N.")
-    answer_lines: List[str]     # for format1 (0..many lines)
+    raw_line: str               # format2: line after "N."
+    top_line: str               # format1: line 1 after "N."
+    answer_lines: List[str]     # format1: lines after top
     is_annulled: bool = False
     detected_format: str = "format1"
     owls_in_line: List[OwlMeta] = field(default_factory=list)
@@ -205,7 +220,6 @@ def parse_round_blocks_format1(text: str) -> Tuple[List[RoundParsed], List[str]]
             if ln.strip() == "":
                 continue
             cur_lines.append(ln)
-
     flush()
     return rounds, alerts
 
@@ -213,24 +227,45 @@ def parse_toad_lines_format2(lines: List[str]) -> Dict[str, ToadMeta]:
     toads: Dict[str, ToadMeta] = {}
     for ln in lines:
         s = normalize_wa(ln).strip()
-        if not s or len(s) < 2:
+        if not s:
             continue
-        team = canon_team_emoji(s[0])
-        if team and TOAD in s[:3]:
-            rest = s[2:].strip()
-            if "-" in rest:
-                left, right = rest.split("-", 1)
-                owner = left.strip()
-                name = right.strip()
-                toads[team] = ToadMeta(team=team, owner=owner, name=name)
+
+        team = first_team_in_line(s[:6])
+        pos_toad = s.find(TOAD)
+        if not team or pos_toad == -1 or pos_toad > 6:
+            continue
+
+        rest = s[pos_toad + 1 :].strip()
+        if "-" not in rest:
+            continue
+        left, right = rest.split("-", 1)
+        owner = left.strip()
+        name = right.strip()
+        toads[team] = ToadMeta(team=team, owner=owner, name=name)
     return toads
 
+def _team_before_owl(raw: str, owl_pos: int) -> Optional[str]:
+    """Get canonical team immediately before 🦉 handling ❤ + VS16."""
+    if owl_pos <= 0:
+        return None
+    prev = raw[owl_pos - 1]
+    if prev in TEAMS and prev != HEART_TEAM:
+        return prev
+    if prev == HEART_CHAR:
+        return HEART_TEAM
+    if prev == VS16 and owl_pos >= 2 and raw[owl_pos - 2] == HEART_CHAR:
+        return HEART_TEAM
+    return None
+
+def _team_starts_at(txt: str, idx: int) -> bool:
+    if idx >= len(txt):
+        return False
+    ch = txt[idx]
+    if ch == HEART_CHAR:
+        return True
+    return ch in TEAMS and ch != HEART_TEAM
+
 def extract_owl_metas_from_round_line(round_num: int, line: str) -> Tuple[List[OwlMeta], List[str]]:
-    """
-    Extract up to first 2 owl metas (attack/defense).
-    Pattern: <TEAM><🦉><owner>-<name> ... then continues with more emojis.
-    Owner/name are extracted from substring after 🦉 up to next TEAM emoji (or end).
-    """
     alerts: List[str] = []
     metas: List[OwlMeta] = []
 
@@ -246,7 +281,7 @@ def extract_owl_metas_from_round_line(round_num: int, line: str) -> Tuple[List[O
         )
 
     for pos in owl_positions[:2]:
-        team = canon_team_emoji(raw[pos - 1]) if pos > 0 else None
+        team = _team_before_owl(raw, pos)
         if not team:
             alerts.append(
                 f"Alerta: en la ronda {round_num} se detectó 🦉 pero no se pudo identificar la casa "
@@ -255,11 +290,13 @@ def extract_owl_metas_from_round_line(round_num: int, line: str) -> Tuple[List[O
             continue
 
         after = raw[pos + 1 :]
+
         nxt = None
-        for i, ch in enumerate(after):
-            if canon_team_emoji(ch):
+        for i in range(len(after)):
+            if _team_starts_at(after, i):
                 nxt = i
                 break
+
         meta_chunk = after[:nxt].strip() if nxt is not None else after.strip()
 
         if "-" not in meta_chunk:
@@ -310,8 +347,8 @@ def parse_format2(text: str) -> ParsedGame:
             continue
         rnum = int(m.group(1))
         rest = normalize_wa(m.group(2)).strip()
-        is_annulled = strip_ws(rest) in {"//", "❌"}
 
+        is_annulled = strip_ws(rest) in {"//", "❌"}
         rp = RoundParsed(
             num=rnum,
             raw_line=rest,
@@ -343,23 +380,14 @@ def parse_format2(text: str) -> ParsedGame:
 
 def parse_format1(text: str) -> ParsedGame:
     rounds, alerts = parse_round_blocks_format1(text)
-    return ParsedGame(
-        input_format="format1",
-        title_line="",
-        rounds=sorted(rounds, key=lambda x: x.num),
-        alerts=alerts,
-    )
+    return ParsedGame(input_format="format1", title_line="", rounds=sorted(rounds, key=lambda x: x.num), alerts=alerts)
 
 def parse_game(text: str) -> ParsedGame:
     fmt = detect_input_format(text)
     return parse_format2(text) if fmt == "format2" else parse_format1(text)
 
 # -------------------- Scoring --------------------
-def score_round_format1(
-    r: RoundParsed,
-    multiplier: int,
-    toad_bonus: Dict[str, bool],
-) -> Tuple[Dict[str, int], List[str], Dict[str, int]]:
+def score_round_format1(r: RoundParsed, multiplier: int, toad_bonus: Dict[str, bool]) -> Tuple[Dict[str, int], List[str], Dict[str, int]]:
     alerts: List[str] = []
     pts = {e: 0 for e in TEAMS}
     answers_count = {e: 0 for e in TEAMS}
@@ -385,23 +413,18 @@ def score_round_format1(
     else:
         present = only_team_emojis(top_raw)
 
-    # Assign top points to present in order (no compaction; unused points discarded)
     used_present: List[str] = []
     for i, emo in enumerate(present):
         if emo in used_present:
-            alerts.append(
-                f"Alerta: en la ronda {r.num} el top repite {emo}. Se tomó solo la primera aparición para el top."
-            )
+            alerts.append(f"Alerta: en la ronda {r.num} el top repite {emo}. Se tomó solo la primera aparición para el top.")
             continue
         used_present.append(emo)
         if i < len(TOP_POINTS):
             pts[emo] += TOP_POINTS[i] * multiplier
 
-    # Absent points
     for emo in absent:
         pts[emo] += ABSENT_TOP_POINTS * multiplier
 
-    # If some teams are neither in present nor absent, treat as absent (weird in format1) and alert
     for emo in TEAMS:
         if emo not in used_present and emo not in absent:
             alerts.append(
@@ -411,7 +434,6 @@ def score_round_format1(
             pts[emo] += ABSENT_TOP_POINTS * multiplier
             absent.append(emo)
 
-    # Answers lines (0..many)
     for ln in r.answer_lines:
         counts = count_team_emojis(ln)
         present_teams_in_line = [e for e, c in counts.items() if c > 0]
@@ -422,7 +444,6 @@ def score_round_format1(
                 answers_count[emo] += c
                 pts[emo] += (c * ANSWER_POINTS) * multiplier
 
-    # Absent team having answers -> alert
     for emo in absent:
         if answers_count[emo] > 0:
             alerts.append(
@@ -430,7 +451,6 @@ def score_round_format1(
                 f"pero no aparece dentro del top (está marcada como ausente)."
             )
 
-    # Toad bonus (only if not annulled)
     for emo, has in toad_bonus.items():
         if has:
             answers_count[emo] += 1
@@ -438,11 +458,7 @@ def score_round_format1(
 
     return pts, alerts, answers_count
 
-def score_round_format2(
-    r: RoundParsed,
-    multiplier: int,
-    toad_bonus: Dict[str, bool],
-) -> Tuple[Dict[str, int], List[str], Dict[str, int]]:
+def score_round_format2(r: RoundParsed, multiplier: int, toad_bonus: Dict[str, bool]) -> Tuple[Dict[str, int], List[str], Dict[str, int]]:
     alerts: List[str] = []
     pts = {e: 0 for e in TEAMS}
     answers_count = {e: 0 for e in TEAMS}
@@ -450,40 +466,30 @@ def score_round_format2(
     raw = strip_ws(r.raw_line)
     if raw in {"//", "❌"}:
         r.is_annulled = True
-
     if r.is_annulled:
         return pts, alerts, answers_count
 
     seen_top: List[str] = []
-    s = normalize_wa(r.raw_line)
-
-    for ch in s:
-        c = canon_team_emoji(ch)
-        if not c:
-            continue
-        if c not in seen_top and len(seen_top) < 4:
-            seen_top.append(c)
-            pts[c] += TOP_POINTS[len(seen_top) - 1] * multiplier
+    for team in iter_team_emojis(r.raw_line):
+        if team not in seen_top and len(seen_top) < 4:
+            seen_top.append(team)
+            pts[team] += TOP_POINTS[len(seen_top) - 1] * multiplier
         else:
-            answers_count[c] += 1
-            pts[c] += ANSWER_POINTS * multiplier
+            answers_count[team] += 1
+            pts[team] += ANSWER_POINTS * multiplier
 
-    # Absent teams not present at all => 350
     for emo in TEAMS:
         if (emo not in seen_top) and (answers_count[emo] == 0):
             pts[emo] += ABSENT_TOP_POINTS * multiplier
 
-    # Toad bonus (only if not annulled)
     for emo, has in toad_bonus.items():
         if has:
             answers_count[emo] += 1
             pts[emo] += ANSWER_POINTS * multiplier
 
-    owl_count = s.count(OWL)
+    owl_count = normalize_wa(r.raw_line).count(OWL)
     if owl_count >= 4:
-        alerts.append(
-            f"Alerta: en la ronda {r.num} aparecen {owl_count} lechuzas; solo se tomarán en cuenta las primeras 2."
-        )
+        alerts.append(f"Alerta: en la ronda {r.num} aparecen {owl_count} lechuzas; solo se tomarán en cuenta las primeras 2.")
 
     return pts, alerts, answers_count
 
@@ -503,12 +509,7 @@ def render_style1(title: str, totals: Dict[str, int]) -> str:
     return "\n".join(lines)
 
 def clean_round_line_for_output2(r: RoundParsed) -> str:
-    """
-    Remove owl owner/name inside the round; keep team emoji + 🦉 evidence, remove spaces.
-    Example: "4. 💛🦉Serelith - Juli💚..." -> "💛🦉💚..."
-    """
     s = normalize_wa(r.raw_line)
-
     if strip_ws(s) in {"//", "❌"}:
         return strip_ws(s)
 
@@ -517,17 +518,24 @@ def clean_round_line_for_output2(r: RoundParsed) -> str:
     while i < len(s):
         ch = s[i]
 
-        c = canon_team_emoji(ch)
-        if c:
-            out.append(c)
+        # team tokens
+        if ch == HEART_CHAR:
+            if i + 1 < len(s) and s[i + 1] == VS16:
+                i += 2
+            else:
+                i += 1
+            out.append(HEART_TEAM)
+            continue
+        if ch in TEAMS and ch != HEART_TEAM:
+            out.append(ch)
             i += 1
             continue
 
+        # owl token
         if ch == OWL:
             out.append(OWL)
             i += 1
-            # skip metadata until next team emoji or end
-            while i < len(s) and (canon_team_emoji(s[i]) is None):
+            while i < len(s) and not _team_starts_at(s, i):
                 i += 1
             continue
 
@@ -549,7 +557,7 @@ def render_style2(
         lines.append(f"{medal}{emo} {fmt_output2_commas(pts)}")
     lines.append("")
 
-    # Mascotas: toads then owls, in a fixed team order (deterministic)
+    # toads
     for team_emo in TEAMS:
         cfg = toads_cfg.get(team_emo)
         if not cfg or not cfg.get("enabled"):
@@ -560,13 +568,15 @@ def render_style2(
         suffix = "" if start_round == 1 else f" (Desde la ronda {start_round})"
         lines.append(f"{team_emo}{TOAD} {owner} - {name}{suffix}")
 
+    # owls
     for team_emo in TEAMS:
         cfg = owls_cfg.get(team_emo)
         if not cfg or not cfg.get("enabled"):
             continue
         owner = (cfg.get("owner") or "").strip()
         name = (cfg.get("name") or "").strip()
-        used_rounds = sorted(set([int(x) for x in (cfg.get("rounds_used") or [])]))
+        used_rounds = cfg.get("rounds_used", []) or []
+        used_rounds = sorted(set([int(x) for x in used_rounds])) if used_rounds else []
         for rn in used_rounds:
             lines.append(f"{team_emo}{OWL} {owner} - {name} (Ronda {rn})")
 
@@ -617,7 +627,6 @@ if parsed:
 
     st.divider()
     st.subheader("⚙️ Configuración por ronda")
-
     mult_map: Dict[int, int] = {}
     cols = st.columns(2)
     for idx, r in enumerate(rounds):
@@ -633,10 +642,7 @@ if parsed:
 
     st.divider()
     st.subheader("🐸 Sapos")
-    st.caption(
-        "Se prellenan en Formato 2, pero puedes editar. El sapo suma +1 respuesta (20 pts) desde la ronda elegida; "
-        "no cuenta en rondas anuladas."
-    )
+    st.caption("Se prellenan en Formato 2, pero puedes editar. El sapo suma +1 respuesta (20 pts) desde la ronda elegida; no cuenta en rondas anuladas.")
 
     toads_cfg = {e: {"enabled": False, "owner": "", "name": "", "start_round": 1} for e in TEAMS}
     for team, meta in parsed.toads_prefill.items():
@@ -651,6 +657,7 @@ if parsed:
             if enabled:
                 owner = st.text_input("Dueño", value=toads_cfg[team_emo]["owner"], key=f"toad_owner_{team_emo}")
                 name = st.text_input("Nombre del sapo", value=toads_cfg[team_emo]["name"], key=f"toad_name_{team_emo}")
+
                 opts = ["Desde el inicio"] + [f"Desde la ronda {rn}" for rn in round_nums[1:]]
                 pick = st.selectbox("¿Desde qué ronda cuenta?", options=opts, index=0, key=f"toad_start_{team_emo}")
                 start_round = 1 if pick == "Desde el inicio" else int(re.findall(r"\d+", pick)[0])
@@ -693,11 +700,11 @@ if parsed:
 
     st.divider()
     st.subheader("🖨️ Output")
-    output_choice = st.selectbox("Formato de output", options=list(OUTPUT_STYLES.keys()), index=0)
+    output_choice = st.selectbox("Formato de output", options=list(OUTPUT_STYLES.keys()), index=1)
 
     if st.button("Calcular"):
-        calc_alerts: List[str] = []
         totals = {e: 0 for e in TEAMS}
+        calc_alerts: List[str] = []
 
         def toad_bonus_for_round(rnum: int, is_annulled: bool) -> Dict[str, bool]:
             if is_annulled:
@@ -705,11 +712,7 @@ if parsed:
             bonuses: Dict[str, bool] = {}
             for emo in TEAMS:
                 cfg = toads_cfg.get(emo, {})
-                if cfg.get("enabled"):
-                    start = int(cfg.get("start_round", 1))
-                    bonuses[emo] = (rnum >= start)
-                else:
-                    bonuses[emo] = False
+                bonuses[emo] = bool(cfg.get("enabled")) and (rnum >= int(cfg.get("start_round", 1)))
             return bonuses
 
         for r in rounds:
@@ -744,8 +747,7 @@ if parsed:
             )
 
         st.divider()
-        st.subheader("✅ Resultado")
-        # st.code includes a copy-to-clipboard button in Streamlit
+        st.subheader("✅ Resultado (con botón de copiar)")
         st.code(out, language=None)
 
         st.subheader("Totales (debug rápido)")
