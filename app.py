@@ -1043,7 +1043,55 @@ if parsed:
         with st.expander("📊 Resumen por ronda", expanded=False):
             TEAM_ORDER = ["❤️", "💚", "💙", "💛"]
             ROUND_MEDALS = ["🥇", "🥈", "🥉", "🏅"]
+            TEAM_COLORS = {
+                "❤️": "#e63946",
+                "💚": "#2a9d8f",
+                "💙": "#457b9d",
+                "💛": "#e9a820",
+            }
 
+            # ── Cumulative line chart ──────────────────────────────────────
+            import plotly.graph_objects as go
+
+            cumulative = {emo: 0 for emo in TEAM_ORDER}
+            chart_data = {emo: [] for emo in TEAM_ORDER}
+            round_labels = []
+
+            for summary in round_summaries:
+                round_labels.append(f"R{summary['num']}")
+                for emo in TEAM_ORDER:
+                    cumulative[emo] += summary["pts"][emo]
+                    chart_data[emo].append(cumulative[emo])
+
+            # Y-axis range: start just below the minimum to show differences clearly
+            all_values = [v for vals in chart_data.values() for v in vals]
+            y_min = max(0, min(all_values) * 0.92) if all_values else 0
+            y_max = max(all_values) * 1.05 if all_values else 1
+
+            fig = go.Figure()
+            for emo in TEAM_ORDER:
+                fig.add_trace(go.Scatter(
+                    x=round_labels,
+                    y=chart_data[emo],
+                    mode="lines+markers",
+                    name=f"{emo} {TEAMS[emo]}",
+                    line=dict(color=TEAM_COLORS[emo], width=3),
+                    marker=dict(size=7, color=TEAM_COLORS[emo]),
+                    hovertemplate="%{y:,} pts<extra>" + TEAMS[emo] + "</extra>",
+                ))
+
+            fig.update_layout(
+                margin=dict(t=30, b=30, l=10, r=10),
+                yaxis=dict(range=[y_min, y_max], tickformat=","),
+                xaxis=dict(title="Ronda"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                hovermode="x unified",
+                height=350,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("---")
+            # ── Per-round breakdown ────────────────────────────────────────
             for summary in round_summaries:
                 rnum = summary["num"]
                 annulled = summary["annulled"]
