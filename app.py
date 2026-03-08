@@ -1004,10 +1004,6 @@ if parsed:
             })
 
         all_alerts = validation_alerts + calc_alerts
-        if all_alerts:
-            with st.expander("Alertas", expanded=True):
-                for a in all_alerts:
-                    st.warning(a)
 
         style_key = OUTPUT_STYLES[output_choice]
         if style_key == "style1":
@@ -1016,6 +1012,24 @@ if parsed:
             out = render_style3(totals)
         else:
             out = render_style2(parsed.title_line, totals, toads_cfg, owls_cfg, rounds)
+
+        # Persist results across re-renders
+        st.session_state["calc_out"] = out
+        st.session_state["calc_totals"] = totals
+        st.session_state["calc_alerts"] = all_alerts
+        st.session_state["calc_summaries"] = round_summaries
+
+    # Render results from session_state (persists after button click)
+    if st.session_state.get("calc_out"):
+        all_alerts = st.session_state["calc_alerts"]
+        totals = st.session_state["calc_totals"]
+        out = st.session_state["calc_out"]
+        round_summaries = st.session_state["calc_summaries"]
+
+        if all_alerts:
+            with st.expander("Alertas", expanded=True):
+                for a in all_alerts:
+                    st.warning(a)
 
         st.divider()
         st.subheader("✅ Resultado")
