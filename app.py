@@ -1044,85 +1044,38 @@ if parsed:
             TEAM_ORDER = ["❤️", "💚", "💙", "💛"]
             ROUND_MEDALS = ["🥇", "🥈", "🥉", "🏅"]
 
-            # Build HTML table
-            th_style = (
-                "background:#1e1e2e;color:#fff;padding:8px 6px;"
-                "text-align:center;font-size:0.82em;white-space:nowrap;"
-            )
-            td_style = (
-                "padding:7px 6px;text-align:center;font-size:0.82em;"
-                "border-bottom:1px solid #e0e0e0;vertical-align:top;"
-            )
-            td_round_style = (
-                "padding:7px 6px;text-align:center;font-size:0.82em;"
-                "border-bottom:1px solid #e0e0e0;font-weight:bold;white-space:nowrap;"
-            )
-            td_winner_style = (
-                "padding:7px 6px;text-align:center;font-size:0.82em;"
-                "border-bottom:1px solid #e0e0e0;vertical-align:top;"
-                "background:#fffbe6;"
-            )
-
-            header_cells = f"<th style='{th_style}'>Ronda</th>"
-            for emo in TEAM_ORDER:
-                header_cells += f"<th style='{th_style}'>{emo}<br>{TEAMS[emo]}</th>"
-
-            rows_html = ""
             for summary in round_summaries:
                 rnum = summary["num"]
                 annulled = summary["annulled"]
                 mult = summary["multiplier"]
                 mult_tag = f" ×{mult}" if mult > 1 else ""
-                round_label = f"R{rnum}{mult_tag}{'  ❌' if annulled else ''}"
+                card_label = f"Ronda {rnum}{mult_tag}{'  ❌ Anulada' if annulled else ''}"
 
-                # Determine round winner(s) for medal
+                # Rank teams by points for this round
                 if not annulled:
-                    round_pts = summary["pts"]
-                    sorted_teams = sorted(TEAM_ORDER, key=lambda e: -round_pts[e])
+                    sorted_teams = sorted(TEAM_ORDER, key=lambda e: -summary["pts"][e])
                     rank = {emo: i for i, emo in enumerate(sorted_teams)}
-                else:
-                    rank = {}
 
-                row = f"<td style='{td_round_style}'>{round_label}</td>"
-                for emo in TEAM_ORDER:
+                with st.expander(card_label, expanded=False):
                     if annulled:
-                        row += f"<td style='{td_style}'>—</td>"
+                        st.caption("Ronda anulada — no se asignaron puntos.")
                     else:
-                        pts_val = summary["pts"][emo]
-                        part_val = summary["participants"][emo]
-                        medal = ROUND_MEDALS[rank[emo]] if rank[emo] < len(ROUND_MEDALS) else "🏅"
-                        is_winner = rank[emo] == 0
-                        cell_style = td_winner_style if is_winner else td_style
-                        row += (
-                            f"<td style='{cell_style}'>"
-                            f"{medal} {fmt_thousands_dot(pts_val)} pts<br>"
-                            f"<span style='color:gray;font-size:0.9em;'>"
-                            f"{part_val} resp.</span>"
-                            f"</td>"
-                        )
-                rows_html += f"<tr>{row}</tr>"
+                        for emo in sorted_teams:
+                            pts_val = summary["pts"][emo]
+                            part_val = summary["participants"][emo]
+                            medal = ROUND_MEDALS[rank[emo]] if rank[emo] < len(ROUND_MEDALS) else "🏅"
+                            resp_txt = f"{part_val} respuesta{'s' if part_val != 1 else ''}"
+                            st.markdown(
+                                f"{medal} **{emo} {TEAMS[emo]}** — {fmt_thousands_dot(pts_val)} pts "
+                                f"<span style='color:gray;font-size:0.9em;'>({resp_txt})</span>",
+                                unsafe_allow_html=True,
+                            )
 
-            # Totals row
-            total_row = f"<td style='{td_round_style}'>TOTAL</td>"
+            # Total summary
+            st.divider()
+            st.markdown("**🏆 Total general**")
             sorted_total = sorted(TEAM_ORDER, key=lambda e: -totals[e])
             total_rank = {emo: i for i, emo in enumerate(sorted_total)}
-            for emo in TEAM_ORDER:
+            for emo in sorted_total:
                 medal = ROUND_MEDALS[total_rank[emo]] if total_rank[emo] < len(ROUND_MEDALS) else "🏅"
-                is_winner = total_rank[emo] == 0
-                cell_style = td_winner_style if is_winner else td_style
-                total_row += (
-                    f"<td style='{cell_style};font-weight:bold;'>"
-                    f"{medal} {fmt_thousands_dot(totals[emo])} pts"
-                    f"</td>"
-                )
-            rows_html += f"<tr>{total_row}</tr>"
-
-            table_html = f"""
-            <div style="overflow-x:auto;width:100%;">
-              <table style="width:100%;border-collapse:collapse;min-width:320px;">
-                <thead><tr>{header_cells}</tr></thead>
-                <tbody>{rows_html}</tbody>
-              </table>
-            </div>
-            """
-            st.markdown(table_html, unsafe_allow_html=True)
+                st.markdown(f"{medal} **{emo} {TEAMS[emo]}** — {fmt_thousands_dot(totals[emo])} pts")
