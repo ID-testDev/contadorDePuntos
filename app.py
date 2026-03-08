@@ -1049,30 +1049,29 @@ if parsed:
                 annulled = summary["annulled"]
                 mult = summary["multiplier"]
                 mult_tag = f" ×{mult}" if mult > 1 else ""
-                card_label = f"Ronda {rnum}{mult_tag}{'  ❌ Anulada' if annulled else ''}"
+                card_label = f"**Ronda {rnum}{mult_tag}{'  ❌ Anulada' if annulled else ''}**"
 
-                # Rank teams by points for this round
-                if not annulled:
+                st.markdown(card_label)
+
+                if annulled:
+                    st.caption("Ronda anulada — no se asignaron puntos.")
+                else:
                     sorted_teams = sorted(TEAM_ORDER, key=lambda e: -summary["pts"][e])
                     rank = {emo: i for i, emo in enumerate(sorted_teams)}
+                    for emo in sorted_teams:
+                        pts_val = summary["pts"][emo]
+                        part_val = summary["participants"][emo]
+                        medal = ROUND_MEDALS[rank[emo]] if rank[emo] < len(ROUND_MEDALS) else "🏅"
+                        resp_txt = f"{part_val} respuesta{'s' if part_val != 1 else ''}"
+                        st.markdown(
+                            f"{medal} **{emo} {TEAMS[emo]}** — {fmt_thousands_dot(pts_val)} pts "
+                            f"<span style='color:gray;font-size:0.9em;'>({resp_txt})</span>",
+                            unsafe_allow_html=True,
+                        )
 
-                with st.expander(card_label, expanded=False):
-                    if annulled:
-                        st.caption("Ronda anulada — no se asignaron puntos.")
-                    else:
-                        for emo in sorted_teams:
-                            pts_val = summary["pts"][emo]
-                            part_val = summary["participants"][emo]
-                            medal = ROUND_MEDALS[rank[emo]] if rank[emo] < len(ROUND_MEDALS) else "🏅"
-                            resp_txt = f"{part_val} respuesta{'s' if part_val != 1 else ''}"
-                            st.markdown(
-                                f"{medal} **{emo} {TEAMS[emo]}** — {fmt_thousands_dot(pts_val)} pts "
-                                f"<span style='color:gray;font-size:0.9em;'>({resp_txt})</span>",
-                                unsafe_allow_html=True,
-                            )
+                st.markdown("---")
 
             # Total summary
-            st.divider()
             st.markdown("**🏆 Total general**")
             sorted_total = sorted(TEAM_ORDER, key=lambda e: -totals[e])
             total_rank = {emo: i for i, emo in enumerate(sorted_total)}
