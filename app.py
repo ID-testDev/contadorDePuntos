@@ -687,6 +687,48 @@ def score_round_format3(r: RoundParsed, multiplier: int, toad_bonus: Dict[str, b
 
     return pts, alerts
 
+# ==================== Participants per round ====================
+def count_participants_per_round(r: RoundParsed, toad_bonus: Dict[str, bool]) -> Dict[str, int]:
+    """
+    Returns how many 'participants' each team had in a round.
+    Counts: each answer emoji = 1 participant, toad bonus = 1 extra participant.
+    For format2: every emoji after the top-4 counts as an answer.
+    For format1/3: answer_lines / raw_line tokens.
+    Annulled rounds return 0 for all.
+    """
+    counts = {e: 0 for e in TEAMS}
+    if r.is_annulled:
+        return counts
+
+    if r.detected_format == "format2":
+        s = normalize_wa(strip_multiplier_markers(r.raw_line))
+        tokens = iter_team_tokens(s)
+        seen_top: List[str] = []
+        for t in tokens:
+            if t not in seen_top and len(seen_top) < 4:
+                seen_top.append(t)
+            else:
+                counts[t] += 1
+
+    elif r.detected_format == "format3":
+        answers = normalize_wa(strip_multiplier_markers(r.raw_line))
+        for emo, c in count_team_emojis(answers).items():
+            counts[emo] += c
+
+    else:  # format1
+        for ln in r.answer_lines:
+            raw_line = normalize_wa(strip_multiplier_markers(ln))
+            for emo, c in count_team_emojis(raw_line).items():
+                counts[emo] += c
+
+    # Toad adds 1 participant
+    for emo, has in toad_bonus.items():
+        if has:
+            counts[emo] += 1
+
+    return counts
+
+
 # ==================== Output renderers ====================
 def render_style1(title: str, totals: Dict[str, int]) -> str:
     items = [(e, totals[e]) for e in TEAMS]
@@ -934,6 +976,8 @@ if parsed:
                     bonuses[emo] = False
             return bonuses
 
+        round_summaries = []  # list of {num, pts, participants, annulled, multiplier}
+
         for r in rounds:
             mult = mult_map.get(r.num, 1)
             bonus = toad_bonus_for_round(r.num, r.is_annulled)
@@ -945,9 +989,19 @@ if parsed:
             else:
                 pts, a = score_round_format1(r, mult, bonus)
 
+            participants = count_participants_per_round(r, bonus)
+
             for emo in TEAMS:
                 totals[emo] += pts[emo]
             calc_alerts.extend(a)
+
+            round_summaries.append({
+                "num": r.num,
+                "pts": dict(pts),
+                "participants": dict(participants),
+                "annulled": r.is_annulled,
+                "multiplier": mult,
+            })
 
         all_alerts = validation_alerts + calc_alerts
         if all_alerts:
@@ -970,3 +1024,48 @@ if parsed:
         st.subheader("Totales (debug rápido)")
         for emo in ["❤️", "💚", "💙", "💛"]:
             st.write(f"{emo} {TEAMS[emo]}: **{fmt_thousands_dot(totals[emo])}**")
+
+        st.divider()
+        st.subheader("📊 Resumen por ronda")
+
+        TEAM_ORDER = ["❤️", "💚", "💙", "💛"]
+
+        # Header row
+        header_cols = st.columns([1, 2, 2, 2, 2])
+        header_cols[0].markdown("**Ronda**")
+        for i, emo in enumerate(TEAM_ORDER):
+            header_cols[i + 1].markdown(f"**{emo} {TEAMS[emo]}**")
+
+        st.markdown("---")
+
+        for summary in round_summaries:
+            rnum = summary["num"]
+            annulled = summary["annulled"]
+            mult = summary["multiplier"]
+            mult_tag = f" ×{mult}" if mult > 1 else ""
+
+            round_label = f"**R{rnum}**{mult_tag}"
+            if annulled:
+                round_label += " ❌"
+
+            row_cols = st.columns([1, 2, 2, 2, 2])
+            row_cols[0].markdown(round_label)
+
+            for i, emo in enumerate(TEAM_ORDER):
+                pts_val = summary["pts"][emo]
+                part_val = summary["participants"][emo]
+                if annulled:
+                    row_cols[i + 1].markdown("—")
+                else:
+                    row_cols[i + 1].markdown(
+                        f"{fmt_thousands_dot(pts_val)} pts  \n"
+                        f"<span style='font-size:0.8em;color:gray;'>{part_val} respuesta{'s' if part_val != 1 else ''}</span>",
+                        unsafe_allow_html=True,
+                    )
+
+        st.markdown("---")
+        # Totals row
+        total_cols = st.columns([1, 2, 2, 2, 2])
+        total_cols[0].markdown("**TOTAL**")
+        for i, emo in enumerate(TEAM_ORDER):
+            total_cols[i + 1].markdown(f"**{fmt_thousands_dot(totals[emo])} pts**")
