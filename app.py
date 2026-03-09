@@ -976,12 +976,7 @@ FORMAT_CARDS = {
         "icon": "📋",
         "desc": "Top en la misma línea del número. Respuestas en líneas siguientes.",
         "example": (
-            "1. 💚💙💛❤️\n"
-            "💚💚💚💚💚\n"
-            "💙💙💙💙💙💙💙💙💙💙\n"
-            "💛💛💛💛💛\n"
-            "\n"
-            "2. 💙💚❤️💛\n"
+            "1. 💙💚❤️💛\n"
             "💚💚💚💚💚💚💚\n"
             "💙💙💙💙💙💙💙💙💙\n"
             "❤️❤️\n"
@@ -993,11 +988,7 @@ FORMAT_CARDS = {
         "icon": "📝",
         "desc": "Todo en una línea por ronda: top + respuestas juntas.",
         "example": (
-            "Trivia Noche de Brujas\n"
-            "💛🐸 Dueño - Sapo\n"
-            "\n"
-            "1. 💚💙💛❤️💚💚💚💚💚💙💙💙💙💙💙💙💙💙💙💛💛💛💛💛\n"
-            "2. 💙💚❤️💛💚💚💚💚💚💚💚💙💙💙💙💙💙💙💙💙💙💙💙❤️❤️💛💛💛💛💛"
+            "1. 💙💙💙💚💚💚❤️💛💛💛💚💙💙💙💛💙💚💚❤️💙💛💛💙💛💛💙❤️💚💛💙💙💛💚💛💛💛"
         ),
     },
     "format3": {
@@ -1005,13 +996,8 @@ FORMAT_CARDS = {
         "icon": "🗒️",
         "desc": "Encabezado con guión (N-). Top y respuestas en dos líneas.",
         "example": (
-            "💛🐸 Dueño - Sapo\n"
-            "\n"
-            "1- 💚💙💛❤️\n"
-            "💚💚💚💚💚 💙💙💙💙💙💙💙💙💙💙 💛💛💛💛💛\n"
-            "\n"
-            "2- 💙💚❤️💛\n"
-            "💚💚💚💚💚💚💚 💙💙💙💙💙💙💙💙💙💙💙💙 ❤️❤️ 💛💛💛💛💛"
+            "1- 💙💚❤️💛\n"
+            "💚💚💙💙❤️💙💙❤️💚💚💛💚💙💛💙💛💙💚💛💙💙💛💚"
         ),
     },
 }
@@ -1026,24 +1012,36 @@ if parsed:
         with col:
             is_selected = chosen == fmt_key
             is_detected = detected == fmt_key
-            border_color = "#7c3aed" if is_selected else "#d1d5db"
-            bg_color = "#f5f3ff" if is_selected else "#ffffff"
-            badge = " 🔍 detectado" if is_detected else ""
+            # Colores con buen contraste en modo oscuro y claro:
+            # - Seleccionado: borde violeta brillante, fondo semitransparente violeta oscuro
+            # - No seleccionado: borde gris neutro, sin fondo forzado (hereda el tema)
+            if is_selected:
+                border = "2px solid #a78bfa"
+                bg = "rgba(109,40,217,0.18)"
+                title_color = "#c4b5fd"
+            else:
+                border = "2px solid rgba(150,150,150,0.35)"
+                bg = "rgba(128,128,128,0.07)"
+                title_color = "inherit"
+            badge = "  🔍 <span style=\"font-size:0.75em;opacity:0.7;\">detectado</span>" if is_detected else ""
             st.markdown(
-                f"""<div style="border:2px solid {border_color};border-radius:10px;
-                    padding:12px 14px;background:{bg_color};min-height:160px;">
-                  <div style="font-size:1.3em;font-weight:700;">{card['icon']} {card['label']}</div>
-                  <div style="font-size:0.78em;color:#6b7280;margin:4px 0 8px;">{card['desc']}{badge}</div>
-                  <pre style="font-size:0.72em;background:#f9fafb;border-radius:6px;
+                f"""<div style="border:{border};border-radius:12px;
+                    padding:14px 14px 10px;background:{bg};min-height:160px;box-sizing:border-box;">
+                  <div style="font-size:1.1em;font-weight:700;color:{title_color};margin-bottom:4px;">
+                    {card['icon']} {card['label']}{badge}
+                  </div>
+                  <div style="font-size:0.78em;opacity:0.65;margin-bottom:10px;line-height:1.4;">
+                    {card['desc']}
+                  </div>
+                  <pre style="font-size:0.73em;background:rgba(0,0,0,0.25);border-radius:6px;
                        padding:8px;overflow-x:auto;white-space:pre-wrap;
-                       color:#374151;margin:0;">{card['example']}</pre>
+                       color:inherit;margin:0;opacity:0.85;line-height:1.5;">{card['example']}</pre>
                 </div>""",
                 unsafe_allow_html=True,
             )
             btn_label = "✅ Seleccionado" if is_selected else "Usar este formato"
-            if st.button(btn_label, key=f"fmt_btn_{fmt_key}", disabled=is_selected):
+            if st.button(btn_label, key=f"fmt_btn_{fmt_key}", disabled=is_selected, use_container_width=True):
                 st.session_state["chosen_format"] = fmt_key
-                # Re-parsear con el formato forzado
                 raw = st.session_state.get("raw_text", text)
                 fmt_map = {"format1": parse_format1, "format2": parse_format2, "format3": parse_format3}
                 reparsed = fmt_map[fmt_key](raw)
