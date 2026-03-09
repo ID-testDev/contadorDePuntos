@@ -189,7 +189,19 @@ def detect_input_format(text: str) -> str:
         long_rounds = sum(1 for ln in round_lines if len(only_team_emojis(ln)) >= 10)
         looks_like_single_line_rounds = long_rounds >= max(1, len(round_lines) // 2)
 
-    if has_trivia_title or has_toad_lines or looks_like_single_line_rounds:
+    # has_toad_lines alone is not enough: format1 can also have toad lines.
+    # Only classify as format2 via toads if round headers also look like
+    # single-line rounds (many emojis per line, ≥10).
+    # If headers have few emojis (≤6, i.e. just the top-4 ranking),
+    # it's format1 with toads, not format2.
+    if has_trivia_title or looks_like_single_line_rounds:
+        return "format2"
+    if has_toad_lines and round_lines:
+        short_headers = sum(1 for ln in round_lines if len(only_team_emojis(ln)) <= 6)
+        if short_headers >= max(1, len(round_lines) // 2):
+            return "format1"
+        return "format2"
+    if has_toad_lines:
         return "format2"
     return "format1"
 
@@ -246,13 +258,13 @@ def parse_round_blocks_format1(text: str) -> Tuple[List[RoundParsed], List[str]]
         top_line = clean[0] if clean else ""
         answer_lines = clean[1:] if len(clean) > 1 else []
 
-        # multiplier suggestion: look for markers in any answer line
+        # multiplier suggestion: look for markers in top_line AND any answer line
         sugg = 1
-        for al in answer_lines:
-            m, a = detect_multiplier_in_text(al)
-            if m != 1:
-                sugg = max(sugg, m)
-                alerts.extend([f"Ronda {cur_num}: {x}" for x in a])
+        for check_line in ([top_line] + answer_lines):
+            _m, _a = detect_multiplier_in_text(check_line)
+            if _m != 1:
+                sugg = max(sugg, _m)
+                alerts.extend([f"Ronda {cur_num}: {x}" for x in _a])
 
         rounds.append(
             RoundParsed(
@@ -526,10 +538,77 @@ def parse_format3(text: str) -> ParsedGame:
     )
 
 def parse_format1(text: str) -> ParsedGame:
+    text = normalize_wa(text)
     rounds, alerts = parse_round_blocks_format1(text)
-    return ParsedGame(input_format="format1", title_line="", rounds=sorted(rounds, key=lambda x: x.num), alerts=alerts)
+
+    # Extract toad lines from lines that appear before the first round header
+    all_lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+    header_re = re.compile(r"^\s*\d+\.\s*")
+    pre_round_lines = []
+    for ln in all_lines:
+        if header_re.match(ln):
+            break
+        pre_round_lines.append(ln)
+
+    toads_prefill = parse_toad_lines_owner_sapo(pre_round_lines)
+
+    return ParsedGame(
+        input_format="format1",
+        title_line="",
+        rounds=sorted(rounds, key=lambda x: x.num),
+        toads_prefill=toads_prefill,
+        alerts=alerts,
+    )
+
+def expand_single_line_input(text: str) -> str:
+    """
+    Si el texto viene todo en una sola línea (sin saltos reales), re-inserta
+    saltos de línea antes de cada 'N.' o 'N-' para que los parsers funcionen.
+    También separa las líneas de sapo (🐸) del bloque de rondas.
+    """
+    text = normalize_wa(text)
+    real_lines = [ln for ln in text.splitlines() if ln.strip()]
+
+    # Solo aplica si hay ≤ 2 líneas reales pero hay rondas detectables
+    if len(real_lines) > 2:
+        return text
+
+    # Detectar si la(s) línea(s) contiene rondas incrustadas (ej: "...1. 💚💙 2. 💙...")
+    combined = " ".join(real_lines)
+    round_dot_re = re.compile(r"(?<!\d)(\d{1,2})\.\s+")
+    if not round_dot_re.search(combined):
+        return text  # No hay rondas, devolver sin cambios
+
+    # Insertar salto antes de cada "N." que corresponda a una ronda
+    # También separar líneas de sapo (🐸) al inicio
+    # Estrategia: split por "N. " donde N es 1-2 dígitos, preservando el delimitador
+    result = round_dot_re.sub(r"\n\1. ", combined).strip()
+
+    # Si hay sapos al inicio (antes de la primera ronda), separarlos en líneas propias
+    # Dividir por 🐸 para dar línea propia a cada sapo
+    toad_split_re = re.compile(r"(?<!\n)([❤💚💙💛\u2764][^\n]*?🐸[^\n]*?)(?=\s+[❤💚💙💛\u2764][^\n]*?🐸|\s+\d{1,2}\.|\s*$)", re.UNICODE)
+
+    lines_out = []
+    for ln in result.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        # Si la línea tiene múltiples sapos pegados, separarlos
+        if ln.count("🐸") > 1 and not re.match(r"^\d{1,2}\.", ln):
+            # Separar por cada emoji de equipo que precede un sapo
+            parts = re.split(r"(?=[❤\u2764💚💙💛](?:[\ufe0f])?🐸)", ln)
+            for p in parts:
+                p = p.strip()
+                if p:
+                    lines_out.append(p)
+        else:
+            lines_out.append(ln)
+
+    return "\n".join(lines_out)
+
 
 def parse_game(text: str) -> ParsedGame:
+    text = expand_single_line_input(text)
     fmt = detect_input_format(text)
     if fmt == "format2":
         return parse_format2(text)
@@ -869,11 +948,94 @@ if st.button("Detectar + Configurar"):
     parsed = parse_game(text)
     st.session_state["parsed"] = parsed
     st.session_state["raw_text"] = text
+    st.session_state["detected_format"] = parsed.input_format
+    st.session_state["chosen_format"] = parsed.input_format
 
 parsed: Optional[ParsedGame] = st.session_state.get("parsed")
 
+# ── Tarjetas de selección de formato ─────────────────────────────────────────
+FORMAT_CARDS = {
+    "format1": {
+        "label": "Formato 1",
+        "icon": "📋",
+        "desc": "Top en la misma línea del número. Respuestas en líneas siguientes.",
+        "example": (
+            "1. 💚💙💛❤️\n"
+            "💚💚💚💚💚\n"
+            "💙💙💙💙💙💙💙💙💙💙\n"
+            "💛💛💛💛💛\n"
+            "\n"
+            "2. 💙💚❤️💛\n"
+            "💚💚💚💚💚💚💚\n"
+            "💙💙💙💙💙💙💙💙💙\n"
+            "❤️❤️\n"
+            "💛💛💛💛💛"
+        ),
+    },
+    "format2": {
+        "label": "Formato 2",
+        "icon": "📝",
+        "desc": "Todo en una línea por ronda: top + respuestas juntas.",
+        "example": (
+            "Trivia Noche de Brujas\n"
+            "💛🐸 Dueño - Sapo\n"
+            "\n"
+            "1. 💚💙💛❤️💚💚💚💚💚💙💙💙💙💙💙💙💙💙💙💛💛💛💛💛\n"
+            "2. 💙💚❤️💛💚💚💚💚💚💚💚💙💙💙💙💙💙💙💙💙💙💙💙❤️❤️💛💛💛💛💛"
+        ),
+    },
+    "format3": {
+        "label": "Formato 3",
+        "icon": "🗒️",
+        "desc": "Encabezado con guión (N-). Top y respuestas en dos líneas.",
+        "example": (
+            "💛🐸 Dueño - Sapo\n"
+            "\n"
+            "1- 💚💙💛❤️\n"
+            "💚💚💚💚💚 💙💙💙💙💙💙💙💙💙💙 💛💛💛💛💛\n"
+            "\n"
+            "2- 💙💚❤️💛\n"
+            "💚💚💚💚💚💚💚 💙💙💙💙💙💙💙💙💙💙💙💙 ❤️❤️ 💛💛💛💛💛"
+        ),
+    },
+}
+
 if parsed:
-    st.info(f"Input detectado: **{parsed.input_format.upper()}**")
+    detected = st.session_state.get("detected_format", parsed.input_format)
+    chosen = st.session_state.get("chosen_format", detected)
+
+    st.markdown("#### Formato detectado — confirma o corrige:")
+    cols = st.columns(3)
+    for col, (fmt_key, card) in zip(cols, FORMAT_CARDS.items()):
+        with col:
+            is_selected = chosen == fmt_key
+            is_detected = detected == fmt_key
+            border_color = "#7c3aed" if is_selected else "#d1d5db"
+            bg_color = "#f5f3ff" if is_selected else "#ffffff"
+            badge = " 🔍 detectado" if is_detected else ""
+            st.markdown(
+                f"""<div style="border:2px solid {border_color};border-radius:10px;
+                    padding:12px 14px;background:{bg_color};min-height:160px;">
+                  <div style="font-size:1.3em;font-weight:700;">{card['icon']} {card['label']}</div>
+                  <div style="font-size:0.78em;color:#6b7280;margin:4px 0 8px;">{card['desc']}{badge}</div>
+                  <pre style="font-size:0.72em;background:#f9fafb;border-radius:6px;
+                       padding:8px;overflow-x:auto;white-space:pre-wrap;
+                       color:#374151;margin:0;">{card['example']}</pre>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+            btn_label = "✅ Seleccionado" if is_selected else "Usar este formato"
+            if st.button(btn_label, key=f"fmt_btn_{fmt_key}", disabled=is_selected):
+                st.session_state["chosen_format"] = fmt_key
+                # Re-parsear con el formato forzado
+                raw = st.session_state.get("raw_text", text)
+                fmt_map = {"format1": parse_format1, "format2": parse_format2, "format3": parse_format3}
+                reparsed = fmt_map[fmt_key](raw)
+                reparsed.input_format = fmt_key
+                st.session_state["parsed"] = reparsed
+                st.rerun()
+
+    st.divider()
 
     if parsed.alerts:
         with st.expander("Alertas detectadas al parsear (informativas)", expanded=False):
