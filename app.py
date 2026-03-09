@@ -1033,9 +1033,10 @@ if parsed:
                   <div style="font-size:0.78em;opacity:0.65;margin-bottom:10px;line-height:1.4;">
                     {card['desc']}
                   </div>
-                  <pre style="font-size:0.73em;background:rgba(0,0,0,0.25);border-radius:6px;
-                       padding:8px;overflow-x:auto;white-space:pre-wrap;
-                       color:inherit;margin:0;opacity:0.85;line-height:1.5;">{card['example']}</pre>
+                  <div style="font-size:0.73em;background:rgba(0,0,0,0.25);border-radius:6px;
+                       padding:8px;overflow-x:auto;
+                       color:inherit;margin:0;opacity:0.85;line-height:1.6;
+                       font-family:monospace;white-space:pre-wrap;word-break:break-all;">{card['example'].replace(chr(10), '<br>')}</div>
                 </div>""",
                 unsafe_allow_html=True,
             )
