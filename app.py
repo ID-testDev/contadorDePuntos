@@ -944,7 +944,23 @@ Rondas
 """
 text = st.text_area("Pega aquí el texto de la dinámica", value=default_text, height=360)
 
-if st.button("Detectar + Configurar"):
+# Si el texto cambió, limpiar estado anterior para forzar re-detección
+_RESET_KEYS = ["parsed", "raw_text", "detected_format", "chosen_format",
+               "calc_out", "calc_totals", "calc_alerts", "calc_summaries"]
+if st.session_state.get("raw_text") and text.strip() != st.session_state.get("raw_text", "").strip():
+    for _k in _RESET_KEYS:
+        st.session_state.pop(_k, None)
+
+col_btn1, col_btn2 = st.columns([3, 1])
+with col_btn1:
+    do_detect = st.button("Detectar + Configurar", use_container_width=True)
+with col_btn2:
+    if st.button("🔄 Limpiar", use_container_width=True):
+        for _k in _RESET_KEYS:
+            st.session_state.pop(_k, None)
+        st.rerun()
+
+if do_detect:
     parsed = parse_game(text)
     st.session_state["parsed"] = parsed
     st.session_state["raw_text"] = text
