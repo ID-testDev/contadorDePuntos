@@ -508,12 +508,24 @@ def parse_format3(text: str) -> ParsedGame:
             answers_line = rounds_lines[i + 1]
             i += 1
 
+        # Consume any extra non-header lines that belong to this round
+        # (e.g. "> Dobles." written after the answers line) and scan them
+        # for multiplier markers. They are NOT appended to answers_line so
+        # that the emoji-count logic is unaffected.
+        extra_lines: List[str] = []
+        while i + 1 < len(rounds_lines) and not dash_re.match(rounds_lines[i + 1]):
+            extra_lines.append(rounds_lines[i + 1])
+            i += 1
+
         is_annulled = strip_ws(top_line) in {"//", "❌"}
 
         sugg_mult = 1
-        if answers_line:
-            sugg_mult, a_m = detect_multiplier_in_text(answers_line)
-            alerts.extend([f"Ronda {rnum}: {x}" for x in a_m])
+        for check in ([answers_line] + extra_lines):
+            if check:
+                _m, a_m = detect_multiplier_in_text(check)
+                if _m != 1:
+                    sugg_mult = max(sugg_mult, _m)
+                    alerts.extend([f"Ronda {rnum}: {x}" for x in a_m])
 
         rounds.append(
             RoundParsed(
